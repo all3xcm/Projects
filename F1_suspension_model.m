@@ -26,8 +26,8 @@ m_u = q_m - m_s; % unsprung mass
 
 
 % define range for spring and damper coefficients
-f_s = 3.50 : 0.50 : 6.50; % oscillation frequency for F1 cars 
-z_s = 0.30 : 0.05: 0.60; % damping ratio for F1 cars   
+f_s = 3.50 : 1.00 : 6.50; % oscillation frequency for F1 cars 
+z_s = 0.30 : 0.10 : 0.60; % damping ratio for F1 cars   
 
 % extract the bounds
 f_s_min = min(f_s);
@@ -37,17 +37,17 @@ z_s_min = min(z_s);
 z_s_max = max(z_s);
 
 % f = 1/(2*pi) * angular frequency to find spring constant range
-k_s = f_s.^2 .* (2*pi)^2 * m_s;
+k_s_range = f_s.^2 .* (2*pi)^2 * m_s;
 
 % z = c/(2*sqrt(k*m)) to find damper constant range
-c_s = z_s .* (2 .* sqrt(k_s .* m_s));
+c_s_range = z_s .* (2 .* sqrt(k_s_range .* m_s));
 
 
 % to determine tire stiffness we use f_t = seperation_factor * f_s
 seperation_factor = 2.5; % ensures significant optimization results  | range: 
 f_t = seperation_factor .* f_s;
 
-k_t = f_t.^2 .* (2*pi)^2 * m_u;
+k_t_range = f_t.^2 .* (2*pi)^2 * m_u;
 
 
 % define velocity
@@ -72,6 +72,7 @@ t_settle = p_s * discernment_factor; % time needed for oscilation to settle
 
 t_sim = t_horizon + t_settle; % actual simulation runtime
 t_simframe = [0, t_sim]; % simulation timeframe
+t_common = linspace(0, t_sim, 1000); % time variation for consistent spatial variance
 
 
 % encapsulate the spatial height
@@ -92,15 +93,6 @@ xnaught = [0;  % y_s
            0;  % y_u
            0]; % v_u
 
-% pass spatial and temporal values into kinematics function
-differential = @(t, x) kinematics(t,        ...
-                                  x,        ...
-                                  m_s,      ...
-                                  m_u,      ...
-                                  min(k_s), ...
-                                  min(c_s), ...
-                                  min(k_t), ...
-                                  y_r);
 
 % set ode tolerance
 opts = odeset( ...
@@ -108,34 +100,111 @@ opts = odeset( ...
     'AbsTol', 1e-12, ...
     'MaxStep', (L3 / v) / 10 );   % force sampling of kerb
 
+% create cells to host varying coefficients
+x_host = cell(length(k_s_range), length(c_s_range));
+t_host = cell(size(x_host));
 
-% extract computed values
-[time, X] = ode45(differential, t_simframe, xnaught, opts);
+% initiate for loop dependent on spring and damper coefficient variations
+for i = 1:numel(k_s_range)
+    for j = 1:numel(c_s_range)
 
-y_s = X(:,1); % sprung mass displacement
-v_s = X(:,2); % sprung mass velocity
-y_u = X(:,3); % unsprung mass displacement
-v_u = X(:,4); % unsprung mass velocity
+        % set coefficient values
+        k_s = k_s_range(i);
+        c_s = c_s_range(j);
+        k_t = k_t_range(i); % tire spring depends on sprung mass spring
+
+        % compute and extract values
+        [time, X] = ode45( @(t, x) ...
+            kinematics( ... % use anonymous function for temporal and spatial sampling
+                       t,    ...
+                       x,    ...
+                       m_s,  ...
+                       m_u,  ...
+                       k_s,  ...
+                       c_s,  ...
+                       k_t,  ...
+                       y_r), ...
+                             ... % include remaining ode45 parameters
+                 t_common,   ...
+                 xnaught,    ...
+                 opts);
+
+        % store computed values
+        x_host{i,j} = X;
+        t_host{i,j} = time;
+    end
+end
 
 
-%% Graphing
-figure(Name = 'F1 Quarter-Suspension Kinematics', Color = 'black');
+%% Plotting
+% prepare color sort
+colors = ['r', 'c', 'm', 'y'];
 
-subplot(2,1,1)
-plot(time, y_s, LineWidth = 1.5); hold on
-plot(time, y_u, LineWidth = 1.5);
-ylabel('Displacement [m]');
-legend('Sprung', 'Unsprung');
-grid on
+% extract values for plotting
+for j = 1:length(c_s_range) % separate damping ratios by figures
+    fig(j) = figure(Name = sprintf('Set (%d)', j), Color = 'black');
+    sgtitle(sprintf('Damping Coefficient: \\zeta = %.2e kg/s', c_s_range(j)))
 
-subplot(2,1,2)
-plot(time, v_s, LineWidth = 1.5); hold on
-plot(time, v_u, LineWidth = 1.5);
-ylabel('Velocity [m/s]');
-xlabel('Time [s]');
-legend('Sprung', 'Unsprung');
-grid on
+    % initiate subplots
+    subplot(2,1,1); hold on; grid on
+    ylabel('Displacement [m]');
 
+    subplot(2,1,2); hold on; grid on
+    ylabel('Velocity [m/s]');
+    xlabel('Time [s]');
+
+    % create a list for legends
+    labels = {};
+
+    for i = 1:length(k_s_range) % iterate through spring coefficients
+        % access the corresponding data
+        X = x_host{i,j}; 
+        %time = t_host(i,j);
+        time = linspace(0, t_sim, 1000); % define a common time
+
+        y_s = X(:,1); % sprung mass displacement
+        v_s = X(:,2); % sprung mass velocity
+        y_u = X(:,3); % unsprung mass displacement
+        v_u = X(:,4); % unsprung mass velocity
+
+        subplot(2,1,1)
+        plot(time, y_s, LineWidth = 1.5, Color = colors(i));
+        plot(time, y_u, LineWidth = 1.5, Color = colors(i), LineStyle = '--', ...
+             HandleVisibility = 'off');
+
+        subplot(2,1,2)
+        plot(time, v_s, LineWidth = 1.5, Color = colors(i));
+        plot(time, v_u, LineWidth = 1.5, Color = colors(i), LineStyle = '--', ...
+             HandleVisibility = 'off');
+
+        labels{end + 1} = sprintf('k = %.1f kN/m', (k_s_range(i) / 1000));
+
+    end
+
+    % create color legends
+    subplot(2,1,1)
+    
+    % dummy lines
+    plot(nan, nan, '-',  'LineWidth', 1.6, Color = 'w');
+    plot(nan, nan, '--', 'LineWidth', 1.6, Color = 'w');
+    
+    labels{end + 1} = 'Sprung';
+    labels{end + 1} = 'Unsprung';
+
+    legend(labels)
+
+    subplot(2,1,2)
+
+    % dummy lines
+    plot(nan, nan, '-',  'LineWidth', 1.6, Color = 'w');
+    plot(nan, nan, '--', 'LineWidth', 1.6, Color = 'w');
+    
+    labels{end + 1} = 'Sprung';
+    labels{end + 1} = 'Unsprung';
+    
+    legend(labels)
+
+end
 
 %% Functions
 
